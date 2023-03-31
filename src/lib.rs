@@ -1,9 +1,11 @@
 //! Minor conveniences on top of the backtrace crate
 //!
 //! See [`short_frames_strict`][] for details.
+use backtrace::*;
 use std::ops::Range;
 
-pub use backtrace::*;
+#[cfg(test)]
+mod test;
 
 /// Gets an iterator over the frames that are part of Rust's "short backtrace" range.
 /// If no such range is found, the full stack is yielded.
@@ -16,14 +18,17 @@ pub use backtrace::*;
 ///
 /// If only one of the special frames is present we will only clamp one side of the stack
 /// (similar to `a..` or `..a`). If the special frames are in the wrong order we will discard
-/// them and produce the full stack.
+/// them and produce the full stack. If multiple versions of a special frame are found
+/// (I've seen it in the wild), we will pick the "innermost" ones, producing the smallest
+/// possible backtrace (and excluding all special frames from the output).
 ///
 /// Each element of the iterator includes a Range which you should use to slice
 /// the frame's `symbols()` array. This handles the theoretical situation where "real" frames
 /// got inlined together with the special marker frames. I want to believe this can't happen
-/// but you can never trust backtraces to be reasonable.
+/// but you can never trust backtraces to be reasonable! We will never yield a Frame to you
+/// with an empty Range.
 ///
-/// Note that some "gunk" frames may still be found within this range, as there is still some
+/// Note that some "gunk" frames may still be found within the short backtrace, as there is still some
 /// platform-specific and optimization-specific glue around the edges because compilers are
 /// complicated and nothing's perfect. This can include:
 ///
@@ -32,13 +37,19 @@ pub use backtrace::*;
 /// * `core::panicking::panic_fmt`
 /// * `rust_begin_unwind`
 ///
+/// In the future we may introduce a non-strict short_frames which heuristically filters
+/// those frames out too. Until then, the strict approach is safe.
+///
 /// # Example
 ///
 /// Here's an example simple "short backtrace" implementation.
 /// Note the use of `sub_frames` for the inner loop to restrict `symbols`!
 ///
-/// This code is based off of code found in `miette` (Apache-2.0), which itself
+/// This example is based off of code found in `miette` (Apache-2.0), which itself
 /// copied the logic from `human-panic` (MIT/Apache-2.0).
+///
+/// FIXME: it would be nice if this example consulted `RUST_BACKTRACE=full`,
+/// and maybe other vars used by rust's builtin panic handler..?
 ///
 /// ```
 /// fn backtrace() -> String {
@@ -49,9 +60,9 @@ pub use backtrace::*;
 ///             // Padding for next lines after frame's address
 ///             const NEXT_SYMBOL_PADDING: usize = HEX_WIDTH + 6;
 ///             let mut backtrace = String::new();
-///             let trace = backtrace_ext::Backtrace::new();
+///             let trace = backtrace::Backtrace::new();
 ///             let frames = backtrace_ext::short_frames_strict(&trace).enumerate();
-///             for (idx, (frame, sub_frames)) in frames {
+///             for (idx, (frame, subframes)) in frames {
 ///                 let ip = frame.ip();
 ///                 let _ = write!(backtrace, "\n{:4}: {:2$?}", idx, ip, HEX_WIDTH);
 ///     
@@ -61,7 +72,7 @@ pub use backtrace::*;
 ///                     continue;
 ///                 }
 ///     
-///                 for (idx, symbol) in symbols[sub_frames].iter().enumerate() {
+///                 for (idx, symbol) in symbols[subframes].iter().enumerate() {
 ///                     // Print symbols from this address,
 ///                     // if there are several addresses
 ///                     // we need to put it on next line
@@ -97,6 +108,12 @@ pub use backtrace::*;
 pub fn short_frames_strict(
     backtrace: &Backtrace,
 ) -> impl Iterator<Item = (&BacktraceFrame, Range<usize>)> {
+    short_frames_strict_impl(backtrace)
+}
+
+pub(crate) fn short_frames_strict_impl<B: Backtraceish>(
+    backtrace: &B,
+) -> impl Iterator<Item = (&B::Frame, Range<usize>)> {
     // Search for the special frames
     let mut short_start = None;
     let mut short_end = None;
@@ -125,8 +142,10 @@ pub fn short_frames_strict(
     }
 
     // Check if these are in the right order, if they aren't, discard them
+    // This also handles the mega-cursed case of "someone made a symbol with both names
+    // so actually they're the exact same subframe".
     if let (Some(start), Some(end)) = (short_start, short_end) {
-        if start > end {
+        if start >= end {
             short_start = None;
             short_end = None;
         }
@@ -149,17 +168,15 @@ pub fn short_frames_strict(
     // of the short backtrace to smooth out the boundaries, and panic_fmt is basically
     // impossible to optimize out. Still, don't trust backtracers!!!
     //
-    // I am extremely NOT confident in this logic, would be nice to really unit test it thoroughly.
-    // I think the "try to avoid yielding empty frames" logic will still produce an empty frame
-    // if the start and end are right next to eachother?
+    // This library has a fuckton of tests to try to catch all the little corner cases here.
 
     // If we found the start bound...
     if let Some((idx, sub_idx)) = short_start {
         if frames[idx].symbols().len() == sub_idx + 1 {
             // If it was the last subframe of this frame, we want to just
-            // use the whole next frame! Be paranoid and clamp this to the
-            // last frame (which is currently len - 1)
-            first_frame = (idx + 1).min(last_frame);
+            // use the whole next frame! It's ok if this takes us to `first_frame = len`,
+            // that will be properly handled as an empty output
+            first_frame = idx + 1;
             first_subframe = 0;
         } else {
             // Otherwise use this frame, and all the subframes after it
@@ -172,12 +189,16 @@ pub fn short_frames_strict(
     if let Some((idx, sub_idx)) = short_end {
         if sub_idx == 0 {
             // If it was the first subframe of this frame, we want to just
-            // use the whole previous frame! Be paranoid and clamp this to 0.
-            last_frame = idx.saturating_sub(1);
-            last_subframe_excl = frames
-                .get(last_frame)
-                .map(|f| f.symbols().len())
-                .unwrap_or(0);
+            // use the whole previous frame!
+            if idx == 0 {
+                // If we were *also* on the first frame, set subframe_excl
+                // to 0, indicating an empty output
+                last_frame = 0;
+                last_subframe_excl = 0;
+            } else {
+                last_frame = idx - 1;
+                last_subframe_excl = frames[last_frame].symbols().len();
+            }
         } else {
             // Otherwise use this frame (no need subframe math, exclusive bound!)
             last_frame = idx;
@@ -185,25 +206,84 @@ pub fn short_frames_strict(
         }
     }
 
+    // If the two subframes managed to perfectly line up with eachother, just
+    // throw everything out and yield an empty range. We don't need to fix any
+    // other values at this point as they won't be used for anything with an
+    // empty iterator
+    let final_frames = {
+        let start = (first_frame, first_subframe);
+        let end = (last_frame, last_subframe_excl);
+        if start == end {
+            &frames[0..0]
+        } else {
+            &frames[first_frame..=last_frame]
+        }
+    };
+
     // Get the index of the last frame when starting from the first frame
     let adjusted_last_frame = last_frame.saturating_sub(first_frame);
 
-    // filter down to the range we computed
-    backtrace.frames()[first_frame..=last_frame]
-        .iter()
-        .enumerate()
-        .map(move |(idx, frame)| {
-            // Default to all subframes being yielded
-            let mut sub_start = 0;
-            let mut sub_end_excl = frame.symbols().len();
-            // If we're on first frame, apply its subframe clamp
-            if idx == 0 {
-                sub_start = first_subframe;
-            }
-            // If we're on the last frame, apply its subframe clamp
-            if idx == adjusted_last_frame {
-                sub_end_excl = last_subframe_excl;
-            }
-            (frame, sub_start..sub_end_excl)
-        })
+    // finally do the iteration
+    final_frames.iter().enumerate().map(move |(idx, frame)| {
+        // Default to all subframes being yielded
+        let mut sub_start = 0;
+        let mut sub_end_excl = frame.symbols().len();
+        // If we're on first frame, apply its subframe clamp
+        if idx == 0 {
+            sub_start = first_subframe;
+        }
+        // If we're on the last frame, apply its subframe clamp
+        if idx == adjusted_last_frame {
+            sub_end_excl = last_subframe_excl;
+        }
+        (frame, sub_start..sub_end_excl)
+    })
+}
+
+pub(crate) trait Backtraceish {
+    type Frame: Frameish;
+    fn frames(&self) -> &[Self::Frame];
+}
+
+pub(crate) trait Frameish {
+    type Symbol: Symbolish;
+    fn symbols(&self) -> &[Self::Symbol];
+}
+
+pub(crate) trait Symbolish {
+    type Name<'a>: SymbolNameish<'a>
+    where
+        Self: 'a;
+    fn name(&self) -> Option<Self::Name<'_>>;
+}
+
+pub(crate) trait SymbolNameish<'a> {
+    fn as_str(&self) -> Option<&'a str>;
+}
+
+impl Backtraceish for Backtrace {
+    type Frame = BacktraceFrame;
+    fn frames(&self) -> &[Self::Frame] {
+        self.frames()
+    }
+}
+
+impl Frameish for BacktraceFrame {
+    type Symbol = BacktraceSymbol;
+    fn symbols(&self) -> &[Self::Symbol] {
+        self.symbols()
+    }
+}
+
+impl Symbolish for BacktraceSymbol {
+    type Name<'a> = SymbolName<'a>;
+    fn name(&self) -> Option<Self::Name<'_>> {
+        self.name()
+    }
+}
+
+impl<'a> SymbolNameish<'a> for SymbolName<'a> {
+    fn as_str(&self) -> Option<&'a str> {
+        self.as_str()
+    }
 }
