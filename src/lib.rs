@@ -1,3 +1,6 @@
+//! Minor conveniences on top of the backtrace crate
+//!
+//! See [`short_frames_strict`][] for details.
 use std::ops::Range;
 
 pub use backtrace::*;
