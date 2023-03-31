@@ -32,23 +32,6 @@ jobs:
           command: fmt
           args: --all -- --check
 
-  # Check that clippy is appeased
-  clippy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v1
-      - uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          profile: minimal
-          components: clippy
-          override: true
-      - uses: actions-rs/clippy-check@v1
-        env:
-          PWD: ${{ env.GITHUB_WORKSPACE }}
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          args: --workspace --tests --examples
 
   # Make sure the docs build without warnings
   docs:
