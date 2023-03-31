@@ -121,7 +121,7 @@ pub(crate) fn short_frames_strict_impl<B: Backtraceish>(
     for (frame_idx, frame) in frames.iter().enumerate() {
         let symbols = frame.symbols();
         for (subframe_idx, frame) in symbols.iter().enumerate() {
-            if let Some(name) = frame.name().and_then(|n| n.as_str()) {
+            if let Some(name) = frame.name_str() {
                 // Yes these ARE backwards, and that's intentional! We want to print the frames from
                 // "newest to oldest" (show what panicked first), and that's the order that Backtrace
                 // gives us, but these magic labels view the stack in the opposite order. So we just
@@ -251,14 +251,7 @@ pub(crate) trait Frameish {
 }
 
 pub(crate) trait Symbolish {
-    type Name<'a>: SymbolNameish<'a>
-    where
-        Self: 'a;
-    fn name(&self) -> Option<Self::Name<'_>>;
-}
-
-pub(crate) trait SymbolNameish<'a> {
-    fn as_str(&self) -> Option<&'a str>;
+    fn name_str(&self) -> Option<&str>;
 }
 
 impl Backtraceish for Backtrace {
@@ -276,14 +269,9 @@ impl Frameish for BacktraceFrame {
 }
 
 impl Symbolish for BacktraceSymbol {
-    type Name<'a> = SymbolName<'a>;
-    fn name(&self) -> Option<Self::Name<'_>> {
-        self.name()
-    }
-}
-
-impl<'a> SymbolNameish<'a> for SymbolName<'a> {
-    fn as_str(&self) -> Option<&'a str> {
-        self.as_str()
+    // We need to shortcut SymbolName here because
+    // HRTB isn't in our msrv
+    fn name_str(&self) -> Option<&str> {
+        self.name().and_then(|n| n.as_str())
     }
 }

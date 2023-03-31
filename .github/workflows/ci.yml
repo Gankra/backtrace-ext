@@ -61,7 +61,7 @@ jobs:
       # Test the cross-product of these platforms+toolchains
       matrix:
         os: [ubuntu-latest, windows-latest, macOS-latest]
-        rust: [stable, nightly]
+        rust: [stable, nightly, "1.54"]
         feature-flags: [""]
     steps:
       # Setup tools

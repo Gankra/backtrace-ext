@@ -17,14 +17,7 @@ impl Frameish for &'static [&'static str] {
 }
 
 impl Symbolish for &'static str {
-    type Name<'a> = &'static str;
-    fn name(&self) -> Option<Self::Name<'_>> {
-        Some(self)
-    }
-}
-
-impl<'a> SymbolNameish<'a> for &'static str {
-    fn as_str(&self) -> Option<&'static str> {
+    fn name_str(&self) -> Option<&str> {
         Some(self)
     }
 }
@@ -35,7 +28,7 @@ fn process(bt: BT) -> Vec<&'static str> {
         let symbols = &frame.symbols()[subframes];
         assert!(!symbols.is_empty());
         for symbol in symbols {
-            result.push(symbol.name().unwrap().as_str().unwrap());
+            result.push(*symbol);
         }
     }
     result

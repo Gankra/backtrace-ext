@@ -2,9 +2,11 @@
 name = "backtrace-ext"
 description = "minor conveniences on top of the backtrace crate"
 version = "0.2.0"
-edition = "2021"
+edition = "2018"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/gankra/backtrace-ext"
+# this msrv is so old that cargo doesn't know what an msrv is..!
+# rust-version = "1.54"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
